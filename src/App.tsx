@@ -109,6 +109,8 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
     const [docPath, setDocPath] = useState<string>("");
     const [quests, setQuests] = useState<Record<string, Quest>>(() => seedBoard().quests);
     const [columns, setColumns] = useState<Record<string, Column>>(() => seedBoard().columns);
+    // Prevent clobbering Firestore with seeded data on first mount
+    const hasLoadedFromCloud = useRef(false);
 
     useEffect(() => { if (isBrowser) localStorage.setItem(STORAGE_KEY, JSON.stringify({ quests, columns })); }, [quests, columns]);
     useEffect(() => { if (isBrowser) localStorage.setItem(FIREBASE_DOC_KEY, docId); }, [docId]);
@@ -140,7 +142,10 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
         setCloudStatus("error"); setCloudMsg(e?.code === "permission-denied" ? "permission-denied (check Auth & rules)" : (e?.message || "Firebase save failed"));
       }
     }, 600);
-    useEffect(() => { debouncedSave({ quests, columns }); }, [quests, columns]);
+    useEffect(() => {
+      if (!hasLoadedFromCloud.current) return; // skip initial seed write
+      debouncedSave({ quests, columns });
+    }, [quests, columns]);
 
     useEffect(() => {
       let unsub: (() => void) | null = null;
@@ -170,10 +175,24 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
             } else {
               await setDoc(ref, { ...seedBoard(), owner: user.uid, updatedAt: Date.now() }, { merge: true });
             }
+          } else {
+            const data = snap.data() as BoardState;
+            if (data?.quests && data?.columns) {
+              setQuests(data.quests);
+              setColumns(data.columns);
+            }
           }
+          // After initial get, allow future saves
+          hasLoadedFromCloud.current = true;
+
           unsub = onSnapshot(ref, (ds) => {
             const d = ds.data() as BoardState | undefined;
-            if (d?.quests && d?.columns) { setQuests(d.quests); setColumns(d.columns); setCloudStatus("ready"); setCloudMsg("Realtime: Live"); }
+            if (d?.quests && d?.columns) {
+              setQuests(d.quests);
+              setColumns(d.columns);
+              setCloudStatus("ready");
+              setCloudMsg("Realtime: Live");
+            }
           });
         } catch (e: any) {
           setCloudStatus("error"); setCloudMsg(e?.message || "Realtime subscribe failed");
