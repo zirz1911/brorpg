@@ -118,7 +118,10 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
     const columnOrder = ["backlog", "doing", "done"] as const;
     const { exp, penalties, activeMainCount, level, rewardTier, overwhelmed } = useMemo(() => computeStats(quests), [quests]);
 
-    const debouncedSave = useDebouncedCallback(async (state: BoardState) => {
+    // --- Save helpers & explicit force-save feedback ---
+    const [forceState, setForceState] = useState<'idle' | 'saving' | 'done'>('idle');
+
+    async function performSave(state: BoardState) {
       try {
         const app = ensureFirebase(EMBEDDED_FIREBASE_CONFIG);
         let user: SafeUser;
@@ -126,21 +129,31 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
           user = await ensureAuthSafe(app);
           setAuthInfo(`UID: ${user.uid}`);
         } catch (e: any) {
-          setCloudStatus("error");
-          setCloudMsg(e?.message || "Auth failed: enable Anonymous sign-in in Firebase Console");
-          setAuthInfo("no-auth");
+          setCloudStatus('error');
+          setCloudMsg(e?.message || 'Auth failed: enable Anonymous sign-in in Firebase Console');
+          setAuthInfo('no-auth');
           return; // abort save when not authenticated
         }
-        if (typeof navigator !== "undefined" && !navigator.onLine) { setCloudStatus("offline"); setCloudMsg("Offline: changes kept locally"); return; }
-        setCloudStatus("saving");
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          setCloudStatus('offline');
+          setCloudMsg('Offline: changes kept locally');
+          return;
+        }
+        setCloudStatus('saving');
         const db = getFirestore(app);
-        const ref = doc(db, "boards", `${docId}`);
+        const ref = doc(db, 'boards', `${docId}`);
         setDocPath(`boards/${docId}`);
         await setDoc(ref, { ...state, updatedAt: Date.now(), owner: user.uid }, { merge: true });
-        setCloudStatus("ready"); setCloudMsg("Synced to Firebase");
+        setCloudStatus('ready');
+        setCloudMsg('Synced to Firebase');
       } catch (e: any) {
-        setCloudStatus("error"); setCloudMsg(e?.code === "permission-denied" ? "permission-denied (check Auth & rules)" : (e?.message || "Firebase save failed"));
+        setCloudStatus('error');
+        setCloudMsg(e?.code === 'permission-denied' ? 'permission-denied (check Auth & rules)' : (e?.message || 'Firebase save failed'));
       }
+    }
+
+    const debouncedSave = useDebouncedCallback(async (state: BoardState) => {
+      await performSave(state);
     }, 600);
     useEffect(() => {
       if (!hasLoadedFromCloud.current) return; // skip initial seed write
@@ -290,7 +303,36 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
           <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
             <label className="font-semibold">Board ID</label>
             <input className="rounded border px-2 py-1" value={docId} onChange={(e)=>setDocId(e.target.value || "br")} />
-            <button onClick={()=>debouncedSave({quests, columns})} className="rounded border px-2 py-1">Force Save</button>
+            <button
+              onClick={async () => {
+                if (forceState === 'saving') return;
+                setForceState('saving');
+                await performSave({ quests, columns });
+                setForceState('done');
+                setTimeout(() => setForceState('idle'), 1200);
+              }}
+              aria-busy={forceState === 'saving'}
+              disabled={forceState === 'saving'}
+              className={
+                `rounded px-3 py-1 text-sm border transition ` +
+                (forceState === 'saving' ? 'opacity-70 cursor-wait' : '') +
+                (forceState === 'done' ? ' border-emerald-300 bg-emerald-50 text-emerald-700' : ' hover:bg-neutral-50')
+              }
+            >
+              {forceState === 'idle' && 'Force Save'}
+              {forceState === 'saving' && (
+                <span className="inline-flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border border-neutral-400 border-t-transparent" />
+                  Saving…
+                </span>
+              )}
+              {forceState === 'done' && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block">✓</span>
+                  Saved
+                </span>
+              )}
+            </button>
             <button onClick={()=>location.reload()} className="rounded border px-2 py-1">Reload</button>
             {docPath && <span className="opacity-70">path: {docPath}</span>}
           </div>
