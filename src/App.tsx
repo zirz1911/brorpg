@@ -132,8 +132,8 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
         if (typeof navigator !== "undefined" && !navigator.onLine) { setCloudStatus("offline"); setCloudMsg("Offline: changes kept locally"); return; }
         setCloudStatus("saving");
         const db = getFirestore(app);
-        const ref = doc(db, "boards", `${user.uid}-${docId}`);
-        setDocPath(`boards/${user.uid}-${docId}`);
+        const ref = doc(db, "boards", `${docId}`);
+        setDocPath(`boards/${docId}`);
         await setDoc(ref, { ...state, updatedAt: Date.now(), owner: user.uid }, { merge: true });
         setCloudStatus("ready"); setCloudMsg("Synced to Firebase");
       } catch (e: any) {
@@ -158,10 +158,19 @@ async function ensureAuthSafe(app: FirebaseApp): Promise<SafeUser> {
             return; // don't attempt Firestore without auth
           }
           const db = getFirestore(app);
-          const ref = doc(db, "boards", `${user.uid}-${docId}`);
-          setDocPath(`boards/${user.uid}-${docId}`);
+          const ref = doc(db, "boards", `${docId}`);
+          setDocPath(`boards/${docId}`);
           const snap = await getDoc(ref);
-          if (!snap.exists()) await setDoc(ref, { ...seedBoard(), owner: user.uid, updatedAt: Date.now() }, { merge: true });
+          if (!snap.exists()) {
+            // One-time migration: if an old per-UID doc exists, copy it to the new shared docId path
+            const oldRef = doc(db, "boards", `${user.uid}-${docId}`);
+            const oldSnap = await getDoc(oldRef);
+            if (oldSnap.exists()) {
+              await setDoc(ref, { ...oldSnap.data(), migratedFrom: `${user.uid}-${docId}`, updatedAt: Date.now() }, { merge: true });
+            } else {
+              await setDoc(ref, { ...seedBoard(), owner: user.uid, updatedAt: Date.now() }, { merge: true });
+            }
+          }
           unsub = onSnapshot(ref, (ds) => {
             const d = ds.data() as BoardState | undefined;
             if (d?.quests && d?.columns) { setQuests(d.quests); setColumns(d.columns); setCloudStatus("ready"); setCloudMsg("Realtime: Live"); }
